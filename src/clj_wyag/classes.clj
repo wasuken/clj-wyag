@@ -123,3 +123,14 @@
   GitObjectBase
   (serialize [this] blobdata)
   (deserialize [this data]) (->GitBlob (:fmt this) data))
+
+(defn object-hash
+  ([fd fmt] (object-hash fd fmt nil))
+  ([fd fmt repo])
+  (let [obj (case fmt
+              "commit" (create-git-commit repo (slurp fd))
+              "tree" (create-git-tree repo (slurp fd))
+              "tag" (create-git-tag repo (slurp fd))
+              "blob" (create-git-blob repo (slurp fd))
+              (throw (Exception (format "Unknown type %s" fmt))))]
+    (object-write obj repo)))
