@@ -1,8 +1,5 @@
 (ns clj-wyag.classes
-  (:require [clj-wyag.util :refer :all]
-            [zlib-tiny.core :as z])
-  (:import (java.nio Path))
-  (:gen-class))
+  (:require [clj-wyag.util :refer :all]))
 
 (defrecord Repository [worktree gitdir conf])
 
@@ -50,7 +47,7 @@
         (when-not (.isDirectory wtf)
           (throw (Exception (format "%s is not a directory!" path))))
         (when-not (-> wtf .list empty?)
-          (throw (Exception (format "%s is not a directory!" path)))))
+          (throw (Exception (format "%s is not Empty!" path)))))
       (.mkdirs wtf))
     (repo-dir repo ["branches"] true)
     (repo-dir repo ["objects"] true)
@@ -134,3 +131,91 @@
               "blob" (create-git-blob repo (slurp fd))
               (throw (Exception (format "Unknown type %s" fmt))))]
     (object-write obj repo)))
+
+(defn kvlm-parse
+  ([raw] (klvm-parse raw 0))
+  ([raw start] (klvm-parse raw 0 nil))
+  ([raw start dct]
+   (let [dict (if (nil? dct) (sorted-map) dct)]
+     (if (or (clojure.string/index-of raw \  start)
+             (clojure.string/index-of raw \newline start))
+       (merge dict {\  (subs raw (+ start 1))})
+       (let [key (subs raw start (clojure.string/index-of raw \  start))
+             end (reduce (fn [e x] (if-not (= (nth raw (clojure.string/index-of raw \newline (+ e 1)))
+                                              \ )
+                                     (reduced e)))
+                         start
+                         (cycle [1]))
+             value (clojure.string/replace (subs end (+ spc 1)) #"\n ")]
+         (kvlm-parse raw (+ end 1) (if (get dict key)
+                                     (merge-with into dict {key [ (get dict key) value]})
+                                     (merge-with (fn [new old] old) dict {key value}))))))))
+
+(defn kvlm-serialize [kvlm]
+  (let [conv-kvlm (reduce-kv (fn [m k v] (merge m {k (if (list? v)
+                                                       v
+                                                       [v])}))
+                             (sorted-map)
+                             kvlm)
+        result (reduce (fn [ret k] (if-not (= (str k) "")
+                                     (str ret
+                                          (reduce (fn [r v]
+                                                    (str k " " (clojure.string/replace v #"\n" "\n ") "\n"))
+                                                  ""
+                                                  (get conv-kvlm k)))
+                                     ret)
+                         ""
+                         (keys kvlm)))] ;; valueを全てseqへ変換
+    (str result "\n" (get kvlm ""))))
+
+(defrecord GitCommit [fmt kvlm]
+  GitObjectBase
+  (serialize [this]
+    (kvlm-serialize (:kvlm this)))
+  (deserialize [this data]
+    (->GitCommit (:fmt this) (kvlm-parse data))))
+
+(defrecord GitTreeLeaf [mode path sha])
+
+(defn create-git-tree-leaf [mode path sha]
+  (->GitTreeLeaf mode path sha))
+
+(defn tree-parse-one
+  ([raw] (tree-parse-one raw 0))
+  ([raw start]
+   (let [xsp (clojure.string/split raw " ")
+         mode (subs (first xsp) start)
+         ysp (clojure.string/split (clojure.string/join " " (drop 1 xsp)) "\x00")
+         path (subs (first ysp) 1)]
+
+     [(+ (count (first ysp)) 21)
+      (create-git-tree-leaf mode path (subs (str->hexstr (subs 1 22 (clojure.string/join "\x00" (drop 1 ysp)))) 2))])))
+
+(defn tree-parse
+  [raw]
+  (let [pos (atom 0)
+        max (count raw)
+        lt (atom [])]
+    (loop []
+      (while (< @pos max)
+        (let [result (tree-parse-one raw pos)]
+          (reset! lt (conj @lt (nth result 1)))
+          (reset! pos (nth result 0)))))))
+
+(defrecord GitTree [fmt items]
+  GitObjectBase
+  (serialize [this]
+    (tree-serialize this))
+  (deserialize [this data]
+    (->GitTree (:fmt this) (tree-parse data))))
+
+(defn tree-checkout [repo tree path]
+  (doseq [item items]
+    (let [obj (object-read repo (:sha item))
+          dest (repo-path path (:path item))]
+      (cond (= "fmt" (:fmt obj))
+            (do
+              (.mkdirs dest)
+              (tree-checkout repo obj dest))
+            (= "blob" (:fmt obj))
+            (spit dest (:blobdata obj))))))

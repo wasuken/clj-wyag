@@ -15,7 +15,7 @@
            (.digest (.getBytes s)))
        (map #(.substring
               (Integer/toString
-               (+ (bit-and % 0xff) 0x100) 16) 1))
+               (+ (bit-and % 0xff) 0x100)) 16 1))
        (apply str)))
 
 ;;; bytes
@@ -34,8 +34,13 @@
       z/gunzip
       z/bytes->str))
 
-;;; filepath
+(defn str->hexstr [s]
+  (clojure.string/join
+   (map #(format "%02x" %)
+        (-> s
+            z/str->bytes))))
 
+;;; filepath
 (defn str->real-path [str]
   (.toString (.toRealPath (.toPath (clojure.java.io/file str))
                           (into-array java.nio.file.LinkOption
